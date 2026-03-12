@@ -127,7 +127,7 @@
 
 - **作者**：huotuo146  
 - 🌐 GitHub：[huntuo146](https://github.com/huntuo146)  
-- 📧 Email：[zzz520sleep@qq.com](mailto:2996603469@qq.com)  
+- 📧 Email：[support@mali.yumeacg.com](mailto:support@mali.yumeacg.com)  
 - 🔗 项目地址：[astrbot_plugin_Group-Verification_PRO](https://github.com/huntuo146/astrbot_plugin_Group-Verification_PRO)  
 
 本项目采用 [AGPLv3 许可证](LICENSE) 开源。
