@@ -513,38 +513,8 @@ class QQGroupVerifyPlugin(Star):
             return False
 
     def _generate_question(self, force_math: bool = False) -> Tuple[str, Any, str]:
-        # 检查是否启用 LLM 开放题
-        if self.llm_question_enabled and (not force_math) and bool(self.question_bank):
-            # 筛选出 LLM 题目和普通题目
-            llm_questions = [q for q in self.question_bank.keys() if q.lower().startswith("llm:")]
-            normal_questions = [q for q in self.question_bank.keys() if not q.lower().startswith("llm:")]
-            
-            # 如果有 LLM 题目，按概率选择
-            if llm_questions and random.random() < self.qa_probability:
-                question = random.choice(llm_questions)
-                # LLM 题目格式: llm:题目=关键词1,关键词2
-                if "=" in question:
-                    q_part, a_part = question.split("=", 1)
-                    q_clean = q_part[4:].strip()  # 去掉 "llm:" 前缀
-                    keywords = [k.strip() for k in a_part.split(",") if k.strip()]
-                    return q_clean, keywords, "llm"
-                else:
-                    q_clean = question[4:].strip()
-                    return q_clean, [], "llm"
-        
-        use_qa = (not force_math) and bool(self.question_bank) and (random.random() < self.qa_probability)
-        if use_qa:
-            # 过滤掉 LLM 题目（如果 LLM 功能未启用或已选择过）
-            available_questions = [
-                q for q in self.question_bank.keys()
-                if not (self.llm_question_enabled and q.lower().startswith("llm:"))
-            ]
-            if not available_questions:
-                available_questions = list(self.question_bank.keys())
-            question = random.choice(available_questions)
-            keywords = self.question_bank[question]
-            return question, keywords, "qa"
-        else:
+        # 如果强制使用数学题，直接生成
+        if force_math:
             op_type = random.choice(['add', 'sub'])
             if op_type == 'add':
                 num1 = random.randint(0, 100)
@@ -557,6 +527,45 @@ class QQGroupVerifyPlugin(Star):
                 answer = num1 - num2
                 question = f"{num1} - {num2} = ?"
             return question, answer, "math"
+        
+        # 从题库中选择题目（LLM 题目和普通题目统一随机选择）
+        if self.question_bank:
+            # 筛选可用题目：如果 LLM 功能未启用，则排除 llm: 前缀的题目
+            available_questions = [
+                q for q in self.question_bank.keys()
+                if self.llm_question_enabled or not q.lower().startswith("llm:")
+            ]
+            if available_questions:
+                question = random.choice(available_questions)
+                answer_data = self.question_bank[question]
+                # 判断题目类型
+                if question.lower().startswith("llm:"):
+                    # LLM 题目格式: llm:题目=关键词1,关键词2 或 llm:题目
+                    if "=" in question:
+                        q_part, a_part = question.split("=", 1)
+                        q_clean = q_part[4:].strip()  # 去掉 "llm:" 前缀
+                        keywords = [k.strip() for k in a_part.split(",") if k.strip()]
+                        return q_clean, keywords, "llm"
+                    else:
+                        q_clean = question[4:].strip()
+                        return q_clean, [], "llm"
+                else:
+                    # 普通关键词题目
+                    return question, answer_data, "qa"
+        
+        # 题库为空或无可选题目时，回退到数学题
+        op_type = random.choice(['add', 'sub'])
+        if op_type == 'add':
+            num1 = random.randint(0, 100)
+            num2 = random.randint(0, 100 - num1)
+            answer = num1 + num2
+            question = f"{num1} + {num2} = ?"
+        else:
+            num1 = random.randint(1, 100)
+            num2 = random.randint(0, num1)
+            answer = num1 - num2
+            question = f"{num1} - {num2} = ?"
+        return question, answer, "math"
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1919810)
     async def handle_event(self, event: AstrMessageEvent):
