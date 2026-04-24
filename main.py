@@ -13,7 +13,7 @@ from astrbot.api.star import Context, Star, register
     "qq_member_verify",
     "SodaTide",
     "QQ群成员动态验证插件 (group_verification)",
-    "26.4.16",
+    "26.4.17",
     "基于 https://github.com/huntuo146/astrbot_plugin_Group-Verification_PRO 修改"
 )
 class QQGroupVerifyPlugin(Star):
@@ -30,7 +30,11 @@ class QQGroupVerifyPlugin(Star):
         self.time_based_timeouts = config.get("time_based_timeouts", [])
         self.kick_countdown_warning_time = int(config.get("kick_countdown_warning_time", 60))
         self.kick_delay = int(config.get("kick_delay", 5))
-        self.recall_unverified_messages = bool(config.get("recall_unverified_messages", True))
+        
+        # --- 自动撤回无关消息配置 ---
+        self.auto_recall_irrelevant_messages = bool(config.get("auto_recall_irrelevant_messages", False))
+        self.auto_recall_threshold = max(0, int(config.get("auto_recall_threshold", 1)))
+        self.auto_recall_bot_messages = bool(config.get("auto_recall_bot_messages", False))
 
         # --- 自动审批补验配置 ---
         self.auto_approval_verify_only = bool(config.get("auto_approval_verify_only", False))
@@ -354,17 +358,15 @@ class QQGroupVerifyPlugin(Star):
         return False, None
 
     async def _recall_tracked_messages(self, bot_api, pending_key: str, gid: int, uid: str, reason: str):
-        if not self.recall_unverified_messages:
-            return
-
+        """撤回用户未验证期间发送的消息（保留用于兼容性）"""
         state = self.pending.get(pending_key)
         if not state:
             return
-
+    
         message_ids = state.get("message_ids", [])
         if not message_ids:
             return
-
+    
         recalled_count = 0
         for message_id in message_ids:
             try:
@@ -372,9 +374,33 @@ class QQGroupVerifyPlugin(Star):
                 recalled_count += 1
             except Exception as e:
                 logger.warning(f"[QQ Verify] 撤回用户 {uid} 在群 {gid} 的消息 {message_id} 失败: {e}")
-
+    
         if recalled_count > 0:
             logger.info(f"[QQ Verify] 用户 {uid} 在群 {gid} 因[{reason}]共撤回 {recalled_count} 条未验证期间消息。")
+    
+    async def _recall_bot_messages(self, bot_api, pending_key: str, gid: int, uid: str, reason: str):
+        """撤回机器人发送的验证消息"""
+        if not self.auto_recall_bot_messages:
+            return
+    
+        state = self.pending.get(pending_key)
+        if not state:
+            return
+    
+        bot_message_ids = state.get("bot_message_ids", [])
+        if not bot_message_ids:
+            return
+    
+        recalled_count = 0
+        for message_id in bot_message_ids:
+            try:
+                await bot_api.call_action("delete_msg", message_id=message_id)
+                recalled_count += 1
+            except Exception as e:
+                logger.warning(f"[QQ Verify] 撤回机器人消息 {message_id} 失败: {e}")
+    
+        if recalled_count > 0:
+            logger.info(f"[QQ Verify] 用户 {uid} 在群 {gid} 因[{reason}]共撤回 {recalled_count} 条机器人验证消息。")
 
     def _track_pending_message(self, pending_key: str, message_id: Any):
         if message_id is None:
@@ -385,30 +411,50 @@ class QQGroupVerifyPlugin(Star):
         tracked_message_ids = state.setdefault("message_ids", [])
         if message_id not in tracked_message_ids:
             tracked_message_ids.append(message_id)
+    
+    def _track_bot_message(self, pending_key: str, message_id: Any):
+        """跟踪机器人发送的验证消息ID，用于后续撤回"""
+        if message_id is None:
+            return
+        state = self.pending.get(pending_key)
+        if not state:
+            return
+        tracked_bot_message_ids = state.setdefault("bot_message_ids", [])
+        if message_id not in tracked_bot_message_ids:
+            tracked_bot_message_ids.append(message_id)
 
     async def _clear_pending_state(self, bot_api, pending_key: str, gid: int, uid: str, reason: str, recall_messages: bool = True):
         state = self.pending.get(pending_key)
         if not state:
             return
-
+    
         task = state.get("task")
         if task and not task.done() and task != asyncio.current_task():
             task.cancel()
-
+    
         if recall_messages:
             await self._recall_tracked_messages(bot_api, pending_key, gid, uid, reason)
-
+    
+        # 撤回机器人验证消息
+        await self._recall_bot_messages(bot_api, pending_key, gid, uid, reason)
+    
         self.pending.pop(pending_key, None)
 
     async def _send_welcome_message(self, bot_api, gid: int, uid: str, nickname: str, message_template: str):
         if not message_template or not message_template.strip():
             return
-
+    
         welcome_msg = message_template.format(
             at_user=f"[CQ:at,qq={uid}]",
             member_name=nickname,
         )
-        await bot_api.call_action("send_group_msg", group_id=gid, message=welcome_msg)
+        result = await bot_api.call_action("send_group_msg", group_id=gid, message=welcome_msg)
+        # 跟踪机器人发送的验证消息ID
+        if result and isinstance(result, dict):
+            bot_msg_id = result.get("message_id")
+            if bot_msg_id:
+                pending_key = self._create_pending_key(gid, uid)
+                self._track_bot_message(pending_key, bot_msg_id)
 
     async def _evaluate_llm_answer(self, question: str, keywords: List[str], answer: str) -> bool:
         """调用 LLM 评估用户回答是否合理
@@ -717,7 +763,12 @@ class QQGroupVerifyPlugin(Star):
             prompt_message = self.wrong_answer_prompt.format(at_user=at_user, question=question)
 
         if prompt_message.strip():
-            await event.bot.api.call_action("send_group_msg", group_id=gid, message=prompt_message)
+            result = await event.bot.api.call_action("send_group_msg", group_id=gid, message=prompt_message)
+            # 跟踪机器人发送的验证消息ID，用于后续撤回
+            if result and isinstance(result, dict):
+                bot_msg_id = result.get("message_id")
+                if bot_msg_id:
+                    self._track_bot_message(pending_key, bot_msg_id)
 
     async def _execute_kick(self, bot_api, gid: int, uid: str, nickname: str, reason: str, expected_expires_at: Optional[datetime] = None):
         pending_key = self._create_pending_key(gid, uid)
@@ -754,7 +805,12 @@ class QQGroupVerifyPlugin(Star):
             if self.kick_message and self.kick_message.strip():
                 at_user = f"[CQ:at,qq={uid}]"
                 kick_msg = self.kick_message.format(at_user=at_user, member_name=nickname)
-                await bot_api.call_action("send_group_msg", group_id=gid, message=kick_msg)
+                result = await bot_api.call_action("send_group_msg", group_id=gid, message=kick_msg)
+                # 跟踪机器人发送的验证消息ID
+                if result and isinstance(result, dict):
+                    bot_msg_id = result.get("message_id")
+                    if bot_msg_id:
+                        self._track_bot_message(pending_key, bot_msg_id)
         except Exception as e:
             logger.error(f"[QQ Verify] 踢人失败 (权限不足?): {e}")
 
@@ -842,7 +898,6 @@ class QQGroupVerifyPlugin(Star):
                             is_new_member=False,
                             force_math=True,
                         )
-                        event.stop_event()
                         return
                     is_correct = eval_result
 
@@ -852,8 +907,6 @@ class QQGroupVerifyPlugin(Star):
                 await self._clear_pending_state(event.bot.api, pending_key, gid, uid, "验证成功", recall_messages=False)
 
             await self._send_welcome_message(event.bot.api, gid, uid, nickname, self.welcome_message)
-            event.stop_event()
-            
         elif is_attempt:
             self.pending[pending_key]["failed_attempts"] += 1
             if self.max_failed_attempts > 0 and self.pending[pending_key]["failed_attempts"] >= self.max_failed_attempts:
@@ -883,28 +936,40 @@ class QQGroupVerifyPlugin(Star):
                         await self._send_welcome_message(event.bot.api, gid, uid, nickname, self.bypass_welcome_message)
                 else:
                     await self._start_verification_process(event, uid, gid, timeout_seconds=next_timeout, is_new_member=False, force_math=force_math)
-            event.stop_event()
             
         else:
             self.pending[pending_key]["unverified_messages"] += 1
             current_unverified = self.pending[pending_key]["unverified_messages"]
-            
+
+            # 自动撤回无关消息
+            if self.auto_recall_irrelevant_messages and self.auto_recall_threshold > 0:
+                if current_unverified >= self.auto_recall_threshold:
+                    if message_id:
+                        try:
+                            await event.bot.api.call_action("delete_msg", message_id=message_id)
+                            logger.debug(f"[QQ Verify] 撤回用户 {uid} 在群 {gid} 的无关消息: {text[:100] if text else '(空消息)'}...")
+                        except Exception as e:
+                            logger.warning(f"[QQ Verify] 撤回消息 {message_id} 失败: {e}")
+
             if self.max_unverified_messages > 0 and current_unverified >= self.max_unverified_messages:
                 await self._execute_kick(event.bot.api, gid, uid, nickname, "未经验证发送过多无关消息")
-                event.stop_event()
             elif self.unverified_reminder_count > 0 and current_unverified == self.unverified_reminder_count:
                 if self.unverified_reminder_prompt and self.unverified_reminder_prompt.strip():
                     at_user = f"[CQ:at,qq={uid}]"
                     # 在此处填入保存的 question
                     reminder_msg = self.unverified_reminder_prompt.format(
-                        at_user=at_user, 
+                        at_user=at_user,
                         member_name=nickname,
                         question=current_question
                     )
                     try:
-                        await event.bot.api.call_action("send_group_msg", group_id=gid, message=reminder_msg)
+                        result = await event.bot.api.call_action("send_group_msg", group_id=gid, message=reminder_msg)
+                        # 跟踪机器人发送的验证消息ID
+                        if result and isinstance(result, dict):
+                            bot_msg_id = result.get("message_id")
+                            if bot_msg_id:
+                                self._track_bot_message(pending_key, bot_msg_id)
                     except Exception: pass
-                event.stop_event()
 
     async def _process_member_decrease(self, event: AstrMessageEvent):
         raw = event.message_obj.raw_message
@@ -933,17 +998,27 @@ class QQGroupVerifyPlugin(Star):
                 warning_msg = self.countdown_warning_prompt.format(at_user=at_user, member_name=nickname)
                 if warning_msg.strip():
                     try:
-                        await bot.api.call_action("send_group_msg", group_id=gid, message=warning_msg)
+                        result = await bot.api.call_action("send_group_msg", group_id=gid, message=warning_msg)
+                        # 跟踪机器人发送的验证消息ID
+                        if result and isinstance(result, dict):
+                            bot_msg_id = result.get("message_id")
+                            if bot_msg_id:
+                                self._track_bot_message(pending_key, bot_msg_id)
                     except Exception: pass
-                
-                await asyncio.sleep(self.kick_countdown_warning_time)
-
+    
+            await asyncio.sleep(self.kick_countdown_warning_time)
+    
             if pending_key not in self.pending: return
-
+    
             if self.failure_message and self.failure_message.strip():
                 failure_msg = self.failure_message.format(at_user=at_user, member_name=nickname, countdown=self.kick_delay)
                 try:
-                    await bot.api.call_action("send_group_msg", group_id=gid, message=failure_msg)
+                    result = await bot.api.call_action("send_group_msg", group_id=gid, message=failure_msg)
+                    # 跟踪机器人发送的验证消息ID
+                    if result and isinstance(result, dict):
+                        bot_msg_id = result.get("message_id")
+                        if bot_msg_id:
+                            self._track_bot_message(pending_key, bot_msg_id)
                 except Exception: pass
             
             await asyncio.sleep(self.kick_delay)

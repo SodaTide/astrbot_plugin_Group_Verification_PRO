@@ -29,11 +29,23 @@
     "default": 5,
     "hint": "发送“验证超时”消息后，等待多少秒再执行踢人操作。默认 5 秒。"
   },
-  "recall_unverified_messages": {
-    "description": "撤回未验证用户的入群后消息",
+  "auto_recall_irrelevant_messages": {
+    "description": "自动撤回无关消息",
     "type": "bool",
-    "default": true,
-    "hint": "开启后，用户入群后在通过验证前发送的全部群消息，会在其被踢出或自行退群时逐条撤回。需要 Bot 具备管理员权限。默认开启。"
+    "default": false,
+    "hint": "开启后，当未验证成员发送与验证无关的消息时，机器人会立即撤回该消息。需要 Bot 具备管理员权限。默认关闭。"
+  },
+  "auto_recall_threshold": {
+    "description": "自动撤回消息的无关计数阈值",
+    "type": "int",
+    "default": 1,
+    "hint": "当无关消息计数达到此值时，开始自动撤回后续的无关消息。设为 0 则关闭自动撤回功能。建议设为 1（即发即撤）。"
+  },
+  "auto_recall_bot_messages": {
+    "description": "自动撤回机器人验证消息",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，当成员退群、被踢出或验证通过时，机器人发送的验证相关消息（入群提示、错误提示、提醒等）会被自动撤回，保持聊天页面整洁。需要 Bot 具备管理员权限。默认关闭。"
   },
   "auto_approval_verify_only": {
     "description": "免验证时段仅验证自动快速通过的入群成员",
