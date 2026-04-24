@@ -13,7 +13,7 @@ from astrbot.api.star import Context, Star, register
     "qq_member_verify",
     "SodaTide",
     "QQ群成员动态验证插件 (group_verification)",
-    "26.4.17",
+    "26.4.24",
     "基于 https://github.com/huntuo146/astrbot_plugin_Group-Verification_PRO 修改"
 )
 class QQGroupVerifyPlugin(Star):
@@ -796,7 +796,7 @@ class QQGroupVerifyPlugin(Star):
                 )
                 return
 
-        await self._clear_pending_state(bot_api, pending_key, gid, uid, reason, recall_messages=True)
+        await self._clear_pending_state(bot_api, pending_key, gid, uid, reason, recall_messages=False)
 
         try:
             await bot_api.call_action("set_group_kick", group_id=gid, user_id=int(uid), reject_add_request=False)
@@ -943,6 +943,7 @@ class QQGroupVerifyPlugin(Star):
 
             # 自动撤回无关消息
             if self.auto_recall_irrelevant_messages and self.auto_recall_threshold > 0:
+                logger.info(f"[DEBUG] 撤回检查: auto_recall={self.auto_recall_irrelevant_messages}, threshold={self.auto_recall_threshold}, current_unverified={current_unverified}, message_id={message_id}")
                 if current_unverified >= self.auto_recall_threshold:
                     if message_id:
                         try:
@@ -980,7 +981,7 @@ class QQGroupVerifyPlugin(Star):
 
         pending_key = self._create_pending_key(gid, uid)
         if pending_key in self.pending:
-            await self._clear_pending_state(event.bot.api, pending_key, gid, uid, "成员离群", recall_messages=True)
+            await self._clear_pending_state(event.bot.api, pending_key, gid, uid, "成员离群", recall_messages=False)
 
     async def _timeout_kick(self, uid: str, gid: int, nickname: str, timeout_seconds: int, expected_expires_at: datetime):
         try:
